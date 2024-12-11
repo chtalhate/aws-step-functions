@@ -1,0 +1,240 @@
+{
+  "Comment": "Post-Call Analytics Workflow with Transcribe and Comprehend",
+  "StartAt": "CheckFileType?",
+  "States": {
+    "CheckFileType?": {
+      "Type": "Choice",
+      "Comment": "Picks the correct pathway for audio and json files",
+      "Choices": [
+        {
+          "Variable": "$.inputType",
+          "StringEquals": "audio",
+          "Next": "TranscribeAudio"
+        }
+      ],
+      "Default": "ProcessTranscriptHeader"
+    },
+    "TranscribeAudio": {
+      "Comment": "Sends the file in S3 for Transcription",
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:058264545810:function:PostCallAnalytics-PCAServer-C-SFStartTranscribeJob-Fj5TRplfZndJ",
+      "Retry": [
+        {
+          "IntervalSeconds": 5,
+          "ErrorEquals": [
+            "Lambda.Unknown"
+          ]
+        }
+      ],
+      "Next": "TranscribeStarted?"
+    },
+    "TranscribeStarted?": {
+      "Type": "Choice",
+      "Comment": "If a job was not started then we need to quit this workflow",
+      "Choices": [
+        {
+          "Variable": "$.jobName",
+          "StringEquals": "",
+          "Next": "TranscriptionFailed"
+        }
+      ],
+      "Default": "WaitForMainTranscribe"
+    },
+    "WaitForMainTranscribe": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:us-east-1:058264545810:function:PostCallAnalytics-PCAServer-CH-SFAwaitNotification-UBGiU75mPOoj",
+        "Payload": {
+          "Input.$": "$",
+          "TaskToken.$": "$$.Task.Token"
+        }
+      },
+      "Retry": [
+        {
+          "IntervalSeconds": 5,
+          "ErrorEquals": [
+            "Lambda.Unknown"
+          ]
+        }
+      ],
+      "Next": "TranscribeComplete?",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "TranscriptionFailed"
+        }
+      ]
+    },
+    "TranscribeComplete?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.transcribeStatus",
+          "StringEquals": "COMPLETED",
+          "Next": "ProcessJobHeader"
+        },
+        {
+          "Variable": "$.transcribeStatus",
+          "StringEquals": "RETRY",
+          "Next": "TranscribeAudio"
+        }
+      ],
+      "Default": "TranscriptionFailed"
+    },
+    "ProcessJobHeader": {
+      "Comment": "Creates header information based upon the Transcribe job",
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:058264545810:function:PostCallAnalytics-PCAServer-CHK-SFExtractJobHeader-1toE5Th2kErP",
+      "Retry": [
+        {
+          "IntervalSeconds": 5,
+          "ErrorEquals": [
+            "Lambda.Unknown"
+          ]
+        }
+      ],
+      "Next": "ProcessTranscription"
+    },
+    "ProcessTranscriptHeader": {
+      "Comment": "Creates header information based upon what's available in a transcript file",
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:058264545810:function:PostCallAnalytics-PCAServ-SFExtractTranscriptHeade-UlVMVOfIjpvR",
+      "Retry": [
+        {
+          "IntervalSeconds": 5,
+          "ErrorEquals": [
+            "Lambda.Unknown"
+          ]
+        }
+      ],
+      "Next": "ProcessTranscription"
+    },
+    "ProcessTranscription": {
+      "Comment": "Takes the output from Transcribe and creates the initial results processing",
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:058264545810:function:PostCallAnalytics-PCAServer-CHKRU72I-SFProcessTurn-Lk7yDm10OWUf",
+      "Retry": [
+        {
+          "IntervalSeconds": 5,
+          "ErrorEquals": [
+            "Lambda.Unknown"
+          ]
+        }
+      ],
+      "Next": "ProcessTelephonyCTR?"
+    },
+    "ProcessTelephonyCTR?": {
+      "Type": "Choice",
+      "Comment": "Do we have a telephony-supplied CTR file to process?",
+      "Choices": [
+        {
+          "Variable": "$.telephony",
+          "StringEquals": "genesys",
+          "Next": "GenesysCTR"
+        }
+      ],
+      "Default": "NoDefinedCTR"
+    },
+    "NoDefinedCTR": {
+      "Type": "Pass",
+      "Next": "PostCTRProcessing"
+    },
+    "GenesysCTR": {
+      "Type": "Task",
+      "Comment": "Handle Genesys-specific CTR files",
+      "Resource": "arn:aws:lambda:us-east-1:058264545810:function:PostCallAnalytics-PCAServer-CHKRU72IO-SFCTRGenesys-zL3o0Xxx4ira",
+      "Retry": [
+        {
+          "IntervalSeconds": 5,
+          "ErrorEquals": [
+            "Lambda.Unknown"
+          ]
+        }
+      ],
+      "Next": "PostCTRProcessing"
+    },
+    "PostCTRProcessing": {
+      "Comment": "Performs post processing after the CTR step has been completed",
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:058264545810:function:PostCallAnalytics-PCAServer-CH-SFPostCTRProcessing-kKktFZLhkiGG",
+      "Retry": [
+        {
+          "IntervalSeconds": 5,
+          "ErrorEquals": [
+            "Lambda.Unknown"
+          ]
+        }
+      ],
+      "Next": "Summarize?"
+    },
+    "Summarize?": {
+      "Type": "Choice",
+      "Comment": "Do we have to summarize the call?",
+      "Choices": [
+        {
+          "Variable": "$.summarize",
+          "StringEquals": "true",
+          "Next": "ProcessSummarize"
+        }
+      ],
+      "Default": "NoSummarize"
+    },
+    "NoSummarize": {
+      "Type": "Pass",
+      "Next": "FinalProcessing"
+    },
+    "ProcessSummarize": {
+      "Comment": "Performs summarization after the PostCTRProcessing is completed",
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:058264545810:function:PostCallAnalytics-PCAServer-CHKRU72IOZ-SFSummarize-zjb70dDVlaiM",
+      "Retry": [
+        {
+          "IntervalSeconds": 5,
+          "ErrorEquals": [
+            "Lambda.Unknown"
+          ]
+        }
+      ],
+      "Next": "FinalProcessing"
+    },
+    "FinalProcessing": {
+      "Comment": "Performs any final common processing after the telephony CTR work",
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:058264545810:function:PostCallAnalytics-PCAServer-CHKR-SFFinalProcessing-dLsAwJSArEvr",
+      "Retry": [
+        {
+          "IntervalSeconds": 5,
+          "ErrorEquals": [
+            "Lambda.Unknown"
+          ]
+        }
+      ],
+      "Next": "Success"
+    },
+    "TranscriptionFailed": {
+      "Comment": "Transcription failed, tidy up resources and move source audio to failed folder",
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:058264545810:function:PostCallAnalytics-PCAServer-CHK-SFTranscribeFailed-EBOHhcm0lNBp",
+      "Retry": [
+        {
+          "IntervalSeconds": 5,
+          "ErrorEquals": [
+            "Lambda.Unknown"
+          ]
+        }
+      ],
+      "Next": "Failed"
+    },
+    "Failed": {
+      "Type": "Fail",
+      "Cause": "Error launching or processing Transcribe job."
+    },
+    "Success": {
+      "Type": "Pass",
+      "End": true
+    }
+  }
+}
